@@ -20,6 +20,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Settings2,
   Trash2,
   XCircle,
 } from 'lucide-react'
@@ -39,6 +40,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -72,6 +81,7 @@ export interface ResourceTableProps<T> {
   showCreateButton?: boolean // If true, show create button
   onCreateClick?: () => void // Callback for create button click
   extraToolbars?: React.ReactNode[] // Additional toolbar components
+  defaultHiddenColumns?: string[] // Columns to hide by default
 }
 
 export function ResourceTable<T>({
@@ -83,10 +93,16 @@ export function ResourceTable<T>({
   showCreateButton = false,
   onCreateClick,
   extraToolbars = [],
+  defaultHiddenColumns = [],
 }: ResourceTableProps<T>) {
   const { t } = useTranslation()
   const [sorting, setSorting] = useState<SortingState>([])
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>(() => {
+    const currentCluster = localStorage.getItem('current-cluster')
+    const storageKey = `${currentCluster}-${resourceName}-columnFilters`
+    const savedFilters = sessionStorage.getItem(storageKey)
+    return savedFilters ? JSON.parse(savedFilters) : []
+  })
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -95,6 +111,24 @@ export function ResourceTable<T>({
     const storageKey = `${currentCluster}-${resourceName}-searchQuery`
     return sessionStorage.getItem(storageKey) || ''
   })
+
+  const [columnVisibility, setColumnVisibility] = useState<
+    Record<string, boolean>
+  >(() => {
+    const currentCluster = localStorage.getItem('current-cluster')
+    const storageKey = `${currentCluster}-${resourceName}-columnVisibility`
+    const savedVisibility = localStorage.getItem(storageKey)
+    if (savedVisibility) {
+      return JSON.parse(savedVisibility)
+    }
+    // Set default hidden columns if no saved state
+    const initialVisibility: Record<string, boolean> = {}
+    defaultHiddenColumns.forEach((colId) => {
+      initialVisibility[colId] = false
+    })
+    return initialVisibility
+  })
+
   const [pagination, setPagination] = useState<PaginationState>(() => {
     const currentCluster = localStorage.getItem('current-cluster')
     const storageKey = `${currentCluster}-${resourceName}-pageSize`
@@ -162,12 +196,30 @@ export function ResourceTable<T>({
     }
   }, [searchQuery, resourceName])
 
+  // Update sessionStorage when column visibility changes
+  useEffect(() => {
+    const currentCluster = localStorage.getItem('current-cluster')
+    const storageKey = `${currentCluster}-${resourceName}-columnVisibility`
+    localStorage.setItem(storageKey, JSON.stringify(columnVisibility))
+  }, [columnVisibility, resourceName])
+
   // Update sessionStorage when page size changes
   useEffect(() => {
     const currentCluster = localStorage.getItem('current-cluster')
     const storageKey = `${currentCluster}-${resourceName}-pageSize`
     sessionStorage.setItem(storageKey, pagination.pageSize.toString())
   }, [pagination.pageSize, resourceName])
+
+  // Update sessionStorage when column filters changes
+  useEffect(() => {
+    const currentCluster = localStorage.getItem('current-cluster')
+    const storageKey = `${currentCluster}-${resourceName}-columnFilters`
+    if (columnFilters.length > 0) {
+      sessionStorage.setItem(storageKey, JSON.stringify(columnFilters))
+    } else {
+      sessionStorage.removeItem(storageKey)
+    }
+  }, [columnFilters, resourceName])
 
   // Reset pagination when filters change
   useEffect(() => {
@@ -292,12 +344,30 @@ export function ResourceTable<T>({
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     onRowSelectionChange: setRowSelection,
+    onColumnVisibilityChange: setColumnVisibility,
+    getRowId: (row) => {
+      const metadata = (
+        row as {
+          metadata?: { name?: string; namespace?: string; uid?: string }
+        }
+      )?.metadata
+      if (!metadata?.name) {
+        return `row-${Math.random()}`
+      }
+      return (
+        metadata.uid ||
+        (metadata.namespace
+          ? `${metadata.namespace}/${metadata.name}`
+          : metadata.name)
+      )
+    },
     state: {
       sorting,
       columnFilters,
       globalFilter: searchQuery,
       pagination,
       rowSelection,
+      columnVisibility,
     },
     onPaginationChange: setPagination,
     // Let TanStack Table handle pagination automatically based on filtered data
@@ -485,20 +555,20 @@ export function ResourceTable<T>({
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-3">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold capitalize">{resourceName}</h1>
-          {!clusterScope &&
-            selectedNamespace &&
-            selectedNamespace !== '_all' && (
-              <div className="text-muted-foreground flex items-center mt-1">
-                <span>Namespace:</span>
-                <Badge variant="outline" className="ml-2 ">
-                  {selectedNamespace}
-                </Badge>
-              </div>
-            )}
+          {!clusterScope && selectedNamespace && (
+            <div className="text-muted-foreground flex items-center mt-1">
+              <span>Namespace:</span>
+              <Badge variant="outline" className="ml-2 ">
+                {selectedNamespace === '_all'
+                  ? 'All Namespaces'
+                  : selectedNamespace}
+              </Badge>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
@@ -653,70 +723,107 @@ export function ResourceTable<T>({
               New
             </Button>
           )}
+
+          {/* Toggle columns Dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon" className="h-9 w-9">
+                <Settings2 className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>Toggle columns</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {table
+                .getAllLeafColumns()
+                .filter((column) => column.getCanHide())
+                .map((column) => {
+                  const header = column.columnDef.header
+                  const headerText =
+                    typeof header === 'string' ? header : column.id
+                  return (
+                    <DropdownMenuCheckboxItem
+                      key={column.id}
+                      className="capitalize"
+                      checked={column.getIsVisible()}
+                      onCheckedChange={(value) =>
+                        column.toggleVisibility(!!value)
+                      }
+                    >
+                      {headerText}
+                    </DropdownMenuCheckboxItem>
+                  )
+                })}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
       {/* Table card */}
-      <div className="overflow-hidden rounded-lg border">
+      <div className="rounded-lg border overflow-hidden">
         <div
-          className={`rounded-md transition-opacity duration-200 ${
+          className={`transition-opacity duration-200 ${
             isLoading && data && (data as T[]).length > 0
               ? 'opacity-75'
               : 'opacity-100'
           }`}
         >
           {renderEmptyState() || (
-            <Table>
-              <TableHeader className="bg-muted sticky top-0 z-10">
-                {table.getHeaderGroups().map((headerGroup) => (
-                  <TableRow key={headerGroup.id}>
-                    {headerGroup.headers.map((header, index) => (
-                      <TableHead
-                        key={header.id}
-                        className={index <= 1 ? 'text-left' : 'text-center'}
-                      >
-                        {header.isPlaceholder ? null : header.column.getCanSort() ? (
-                          <Button
-                            variant="ghost"
-                            onClick={header.column.getToggleSortingHandler()}
-                            className={
-                              header.column.getIsSorted() ? 'text-primary' : ''
-                            }
-                          >
-                            {flexRender(
+            <div className="relative max-h-[calc(100vh-210px)] overflow-auto scrollbar-hide">
+              <Table>
+                <TableHeader className="bg-muted">
+                  {table.getHeaderGroups().map((headerGroup) => (
+                    <TableRow key={headerGroup.id}>
+                      {headerGroup.headers.map((header, index) => (
+                        <TableHead
+                          key={header.id}
+                          className={index <= 1 ? 'text-left' : 'text-center'}
+                        >
+                          {header.isPlaceholder ? null : header.column.getCanSort() ? (
+                            <Button
+                              variant="ghost"
+                              onClick={header.column.getToggleSortingHandler()}
+                              className={
+                                header.column.getIsSorted()
+                                  ? 'text-primary'
+                                  : ''
+                              }
+                            >
+                              {flexRender(
+                                header.column.columnDef.header,
+                                header.getContext()
+                              )}
+                              {header.column.getIsSorted() && (
+                                <span className="ml-2">
+                                  {header.column.getIsSorted() === 'asc'
+                                    ? '↑'
+                                    : '↓'}
+                                </span>
+                              )}
+                            </Button>
+                          ) : (
+                            flexRender(
                               header.column.columnDef.header,
                               header.getContext()
-                            )}
-                            {header.column.getIsSorted() && (
-                              <span className="ml-2">
-                                {header.column.getIsSorted() === 'asc'
-                                  ? '↑'
-                                  : '↓'}
-                              </span>
-                            )}
-                          </Button>
-                        ) : (
-                          flexRender(
-                            header.column.columnDef.header,
-                            header.getContext()
-                          )
-                        )}
-                      </TableHead>
-                    ))}
-                  </TableRow>
-                ))}
-              </TableHeader>
-              <TableBody className="**:data-[slot=table-cell]:first:w-0">
-                {renderRows()}
-              </TableBody>
-            </Table>
+                            )
+                          )}
+                        </TableHead>
+                      ))}
+                    </TableRow>
+                  ))}
+                </TableHeader>
+                <TableBody className="**:data-[slot=table-cell]:first:w-0">
+                  {renderRows()}
+                </TableBody>
+              </Table>
+            </div>
           )}
         </div>
       </div>
 
       {/* Pagination with memoized calculations */}
       {data && (data as T[]).length > 0 && (
-        <div className="flex items-center justify-between px-4">
+        <div className="flex items-center justify-between px-2 py-1">
           <div className="text-muted-foreground hidden flex-1 text-sm lg:flex">
             {hasActiveFilters ? (
               <>
